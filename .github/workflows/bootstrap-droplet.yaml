@@ -1,9 +1,6 @@
 name: Bootstrap Digital Ocean Droplet
 
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
     inputs:
       region:
@@ -21,7 +18,6 @@ on:
 
 env:
   DROPLET_NAME: rwp-live
-  FIREWALL_NAME: rwp-live-firewall
 
 jobs:
   bootstrap:
@@ -45,16 +41,6 @@ jobs:
           fi
           echo "No existing droplet found. Proceeding."
 
-      # Firewall
-      - name: Create firewall
-        run: |
-          doctl compute firewall create \
-            --name "$FIREWALL_NAME" \
-            --inbound-rules "protocol:tcp,ports:22,address:0.0.0.0/0,address:::/0 protocol:tcp,ports:80,address:0.0.0.0/0,address:::/0 protocol:tcp,ports:443,address:0.0.0.0/0,address:::/0" \
-            --outbound-rules "protocol:tcp,ports:all,address:0.0.0.0/0,address:::/0 protocol:udp,ports:all,address:0.0.0.0/0,address:::/0 protocol:icmp,address:0.0.0.0/0,address:::/0" \
-            --format ID --no-header | tee /tmp/firewall_id.txt
-          echo "FIREWALL_ID=$(cat /tmp/firewall_id.txt | tr -d '[:space:]')" >> "$GITHUB_ENV"
-
       # Cloud-init
       - name: Prepare cloud-init
         run: |
@@ -76,11 +62,6 @@ jobs:
             --format ID --no-header | tr -d '[:space:]')
           echo "DROPLET_ID=$DROPLET_ID" >> "$GITHUB_ENV"
           echo "Created droplet with ID: $DROPLET_ID"
-
-      - name: Attach firewall to droplet
-        run: |
-          doctl compute firewall add-droplets "$FIREWALL_ID" --droplet-ids "$DROPLET_ID"
-          echo "Firewall '$FIREWALL_NAME' attached to droplet '$DROPLET_NAME'."
 
       - name: Get droplet IP
         run: |
