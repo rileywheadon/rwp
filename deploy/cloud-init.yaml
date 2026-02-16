@@ -8,8 +8,17 @@ packages:
   - curl
   - gnupg
   - git
+  - openssh-server
+
+# Ensure SSH is enabled and configured
+ssh_pwauth: false
+disable_root: false
 
 runcmd:
+  # Ensure SSH is running
+  - systemctl enable ssh
+  - systemctl start ssh
+
   # Install Docker
   - install -m 0755 -d /etc/apt/keyrings
   - curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
