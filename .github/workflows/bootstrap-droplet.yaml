@@ -18,6 +18,9 @@ on:
 
 env:
   DROPLET_NAME: rwp-live
+  DOCKERHUB_USERNAME: rileywheadon
+  TRAEFIK_USERNAME: rileywheadon
+  EMAIL: rileywheadon@gmail.com
 
 jobs:
   bootstrap:
@@ -52,7 +55,7 @@ jobs:
       - name: Prepare cloud-init
         run: |
           sed \
-            -e "s|\${DOCKERHUB_USERNAME}|${{ secrets.DOCKERHUB_USERNAME }}|g" \
+            -e "s|\${DOCKERHUB_USERNAME}|${{ env.DOCKERHUB_USERNAME }}|g" \
             -e "s|\${DOCKERHUB_TOKEN}|${{ secrets.DOCKERHUB_TOKEN }}|g" \
             deploy/cloud-init.yaml > /tmp/cloud-init.yaml
 
@@ -101,7 +104,7 @@ jobs:
       - name: Generate Traefik basic auth string
         run: |
           TRAEFIK_BASIC_AUTH=$(docker run --rm httpd:2 htpasswd -nbB \
-            "${{ secrets.TRAEFIK_USERNAME }}" "${{ secrets.TRAEFIK_PASSWORD }}" \
+            "${{ env.TRAEFIK_USERNAME }}" "${{ secrets.TRAEFIK_PASSWORD }}" \
             | sed 's/\$/\$\$/g')
           echo "TRAEFIK_BASIC_AUTH=$TRAEFIK_BASIC_AUTH" >> "$GITHUB_ENV"
 
