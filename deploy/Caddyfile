@@ -1,0 +1,16 @@
+
+# Redirect all HTTP to HTTPS
+http:// {
+    redir https://{host}{uri} permanent
+}
+
+# Production (automatic ACME)
+example.rwheadon.dev {
+    reverse_proxy example:5000
+}
+
+# Use Caddy's internal CA for development
+localhost {
+    tls internal
+    reverse_proxy example:5000
+}
