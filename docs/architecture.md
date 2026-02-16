@@ -7,6 +7,7 @@ Complete infrastructure as code setup:
 - Provision a new droplet with flexible configuration using GHA.
 - Immediately deploy all services after provisioning.
 - Support for easy re-scaling of droplet (with downtime).
+- Support for easy teardown of droplet.
 
 Observability stack (deployed as a service).
 
@@ -16,6 +17,8 @@ Dependency management:
 
 - All services use the same dependency versions (single version policy).
 - Use Renovate GitHub bot for dependency updates.
+
+Periodic, automateds backups to ensure data safety.
 
 ## Architecture
 

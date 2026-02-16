@@ -1,0 +1,166 @@
+name: Bootstrap Digital Ocean Droplet
+
+on:
+  workflow_dispatch:
+    inputs:
+      region:
+        description: "Digital Ocean region (e.g., nyc3, sfo3, sgp1)"
+        required: true
+        default: "sfo3"
+      size:
+        description: "Droplet size slug (e.g., s-1vcpu-1gb, s-2vcpu-2gb)"
+        required: true
+        default: "s-1vcpu-1gb"
+      image:
+        description: "OS image slug (e.g., ubuntu-22-04-x64)"
+        required: true
+        default: "ubuntu-22-04-x64"
+
+env:
+  DROPLET_NAME: rwp-live
+  FIREWALL_NAME: rwp-live-firewall
+
+jobs:
+  bootstrap:
+    runs-on: ubuntu-latest
+    steps:
+      # Setup
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install doctl
+        uses: digitalocean/action-doctl@v2
+        with:
+          token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+
+      # Pre-flight checks 
+      - name: Check if droplet already exists
+        run: |
+          if doctl compute droplet list --format Name --no-header | grep -qw "$DROPLET_NAME"; then
+            echo "::error::Droplet '$DROPLET_NAME' already exists. Aborting."
+            exit 1
+          fi
+          echo "No existing droplet found. Proceeding."
+
+      # Firewall
+      - name: Create firewall
+        run: |
+          doctl compute firewall create \
+            --name "$FIREWALL_NAME" \
+            --inbound-rules "protocol:tcp,ports:22,address:0.0.0.0/0,address:::/0 protocol:tcp,ports:80,address:0.0.0.0/0,address:::/0 protocol:tcp,ports:443,address:0.0.0.0/0,address:::/0" \
+            --outbound-rules "protocol:tcp,ports:all,address:0.0.0.0/0,address:::/0 protocol:udp,ports:all,address:0.0.0.0/0,address:::/0 protocol:icmp,address:0.0.0.0/0,address:::/0" \
+            --format ID --no-header | tee /tmp/firewall_id.txt
+          echo "FIREWALL_ID=$(cat /tmp/firewall_id.txt | tr -d '[:space:]')" >> "$GITHUB_ENV"
+
+      # Cloud-init
+      - name: Prepare cloud-init
+        run: |
+          sed \
+            -e "s|\${DOCKERHUB_USERNAME}|${{ secrets.DOCKERHUB_USERNAME }}|g" \
+            -e "s|\${DOCKERHUB_TOKEN}|${{ secrets.DOCKERHUB_TOKEN }}|g" \
+            deploy/cloud-init.yaml > /tmp/cloud-init.yaml
+
+      # Create droplet
+      - name: Create droplet
+        run: |
+          DROPLET_ID=$(doctl compute droplet create "$DROPLET_NAME" \
+            --region "${{ inputs.region }}" \
+            --size "${{ inputs.size }}" \
+            --image "${{ inputs.image }}" \
+            --ssh-keys "${{ secrets.DIGITALOCEAN_SSH_KEY_ID }}" \
+            --user-data-file /tmp/cloud-init.yaml \
+            --wait \
+            --format ID --no-header | tr -d '[:space:]')
+          echo "DROPLET_ID=$DROPLET_ID" >> "$GITHUB_ENV"
+          echo "Created droplet with ID: $DROPLET_ID"
+
+      - name: Attach firewall to droplet
+        run: |
+          doctl compute firewall add-droplets "$FIREWALL_ID" --droplet-ids "$DROPLET_ID"
+          echo "Firewall '$FIREWALL_NAME' attached to droplet '$DROPLET_NAME'."
+
+      - name: Get droplet IP
+        run: |
+          DROPLET_IP=$(doctl compute droplet get "$DROPLET_ID" --format PublicIPv4 --no-header | tr -d '[:space:]')
+          echo "DROPLET_IP=$DROPLET_IP" >> "$GITHUB_ENV"
+          echo "Droplet IP: $DROPLET_IP"
+
+      # Wait for SSH and cloud-init
+      - name: Install SSH key
+        run: |
+          install -m 600 -D /dev/null ~/.ssh/id_rsa
+          echo "${{ secrets.DIGITALOCEAN_SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          ssh-keyscan -H "$DROPLET_IP" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Wait for SSH to be available
+        run: |
+          echo "Waiting for SSH on $DROPLET_IP..."
+          for i in $(seq 1 30); do
+            if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -o BatchMode=yes root@"$DROPLET_IP" 'echo ok' 2>/dev/null; then
+              echo "SSH is available."
+              exit 0
+            fi
+            echo "Attempt $i/30 - retrying in 10s..."
+            sleep 10
+          done
+          echo "::error::SSH did not become available in time."
+          exit 1
+
+      - name: Wait for cloud-init to complete
+        run: |
+          echo "Waiting for cloud-init to finish on $DROPLET_IP..."
+          ssh -o StrictHostKeyChecking=no root@"$DROPLET_IP" 'cloud-init status --wait'
+          echo "Cloud-init complete."
+
+      # Deploy
+      - name: Generate Traefik basic auth string
+        run: |
+          TRAEFIK_BASIC_AUTH=$(docker run --rm httpd:2 htpasswd -nbB \
+            "${{ secrets.TRAEFIK_USERNAME }}" "${{ secrets.TRAEFIK_PASSWORD }}" \
+            | sed 's/\$/\$\$/g')
+          echo "TRAEFIK_BASIC_AUTH=$TRAEFIK_BASIC_AUTH" >> "$GITHUB_ENV"
+
+      - name: Deploy docker-compose stack
+        run: |
+          ssh -o StrictHostKeyChecking=no root@"$DROPLET_IP" bash -s << 'DEPLOY_EOF'
+            export EMAIL="${{ secrets.EMAIL }}"
+            export TRAEFIK_BASIC_AUTH='${{ env.TRAEFIK_BASIC_AUTH }}'
+
+            cd /opt/rwp/deploy
+            docker compose up -d
+
+            echo "Waiting for services to start..."
+            sleep 10
+            docker compose ps
+          DEPLOY_EOF
+
+      # Outputs
+      - name: Store IP as repository variable
+        run: |
+          curl -s -X PATCH \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/variables/DROPLET_IP" \
+            -d "{\"value\":\"$DROPLET_IP\"}" \
+          || curl -s -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/variables" \
+            -d "{\"name\":\"DROPLET_IP\",\"value\":\"$DROPLET_IP\"}"
+          echo "Stored DROPLET_IP=$DROPLET_IP as repository variable."
+
+      - name: Print summary
+        run: |
+          echo "## Bootstrap Complete 🚀" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Resource | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|----------|-------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Droplet Name | \`$DROPLET_NAME\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Droplet IP | \`$DROPLET_IP\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Region | \`${{ inputs.region }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Size | \`${{ inputs.size }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Image | \`${{ inputs.image }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Traefik Dashboard | https://traefik.rwheadon.dev |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Whoami Service | https://whoami.rwheadon.dev |" >> "$GITHUB_STEP_SUMMARY"
