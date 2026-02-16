@@ -12,6 +12,7 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
+      # Setup
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -26,31 +27,19 @@ jobs:
           echo "${{ secrets.DIGITALOCEAN_SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
 
+      # Pre-flight checks
       - name: Get droplet IP
         id: droplet_ip
         run: |
           DROPLET_IP=$(doctl compute droplet get "$DROPLET_NAME" --format PublicIPv4 --no-header | tr -d '[:space:]')
           if [ -z "$DROPLET_IP" ]; then
-            echo "No droplet IP found for $DROPLET_NAME" >&2
+            echo "[ERROR] No droplet IP found for $DROPLET_NAME" >&2
             exit 1
           fi
           echo "DROPLET_IP=$DROPLET_IP" >> $GITHUB_ENV
-          echo "Droplet IP: $DROPLET_IP"
+          echo "[INFO] Droplet IP: $DROPLET_IP"
 
-      - name: Wait for SSH to be available
-        run: |
-          echo "Waiting for SSH on $DROPLET_IP..."
-          for i in $(seq 1 30); do
-            if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -o BatchMode=yes root@${{ env.DROPLET_IP }} 'echo ok' 2>/dev/null; then
-              echo "SSH is available."
-              exit 0
-            fi
-            echo "Attempt $i/30 - retrying in 10s..."
-            sleep 10
-          done
-          echo "SSH did not become available in time." >&2
-          exit 1
-
+      # Deploy
       - name: Deploy docker-compose stack on droplet
         run: |
           ssh -o StrictHostKeyChecking=no root@${{ env.DROPLET_IP }} bash -s << 'DEPLOY_EOF'
@@ -60,7 +49,3 @@ jobs:
             docker compose up -d
             docker compose ps
           DEPLOY_EOF
-
-      - name: Summary
-        run: |
-          echo "Deployed to $DROPLET_NAME at $DROPLET_IP"
