@@ -22,8 +22,8 @@ Periodic, automateds backups to ensure data safety.
 
 ## Architecture
 
-- All applications are deployed onto a single, permanent DO droplet.
-- All applications run their own database directly on the droplet.
+- All applications are deployed onto a single DO droplet.
+- All applications run their database directly on the droplet.
 - All applications use my personal DockerHub container registry.
 
 ### Monorepo Design
